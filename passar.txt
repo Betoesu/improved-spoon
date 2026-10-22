@@ -1,0 +1,5 @@
+git clone ssh://git@analytics.fontes.intranet.bb.com.br/d3b/Sandboxes/d3b1b0c/dijur_dinfo/rpa/dijurlib.git
+cd dijurlib
+python -c "import os, setuptools, tokenize; exec(tokenize.open('setup.py').read()) if os.path.exists('setup.py') else setuptools.setup()" develop
+cd ..
+pip list
