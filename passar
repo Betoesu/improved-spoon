@@ -1,0 +1,2 @@
+pip check
+python -c "import ast,pathlib,sys,importlib.util as u; p=list(pathlib.Path('.').glob('*.py'))+list(pathlib.Path('../dijurlib').rglob('*.py')); loc={f.stem for f in p}|{'DijurLib','dijurlib'}; imp={n.names[0].name.split('.')[0] for f in p for n in ast.walk(ast.parse(f.read_text('utf-8','ignore'))) if isinstance(n,ast.Import)}|{n.module.split('.')[0] for f in p for n in ast.walk(ast.parse(f.read_text('utf-8','ignore'))) if isinstance(n,ast.ImportFrom) and n.module}; print('FALTAM INSTALAR:', [m for m in sorted(imp-sys.stdlib_module_names-loc) if not u.find_spec(m)])"
