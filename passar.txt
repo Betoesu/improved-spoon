@@ -1,5 +1,0 @@
-[System.Net.WebRequest]::GetSystemWebProxy().GetProxy("https://pypi.org").AbsoluteUri
-
-pip install selenium -v
-
-pip config set global.proxy "ENDERECO_QUE_APARECEU"
