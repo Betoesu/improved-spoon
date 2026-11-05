@@ -1,0 +1,22 @@
+ssh-keygen -t ed25519
+Get-Content $HOME\.ssh\id_ed25519.pub
+# Colar a chave em: https://analytics.fontes.intranet.bb.com.br/profile/keys
+ssh -T git@analytics.fontes.intranet.bb.com.br
+# Digitar "yes" e apertar Enter
+
+
+pip config set global.trusted-host "pypi.org files.pythonhosted.org pypi.python.org"
+
+
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+pip install --no-index --find-links=./pacotes_offline wheel setuptools selenium requests pandas python-dotenv python-dateutil pyperclip
+
+pip install --no-build-isolation --no-deps git+ssh://git@analytics.fontes.intranet.bb.com.br/d3b/Sandboxes/d3b1b0c/dijur_dinfo/rpa/dijurlib.git
+
+
+
+PYTHON
+https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
