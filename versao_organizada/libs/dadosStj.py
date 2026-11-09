@@ -100,8 +100,10 @@ def pegar_tramitacao(driver: Any, wait: Any, publicacao: str) -> str:
 
 def extrair_nome(destinatario: Dict[str, Any]) -> str:
     """Extrai o nome limpo do destinatário a partir da estrutura retornada pelo PJe."""
-    nome_completo = destinatario["nome"]
-    nome = nome_completo.split(".", 1)[1].split("(")[0].strip()
+    nome_completo = str(destinatario.get("nome", ""))
+    partes = nome_completo.split(".", 1)
+    texto_base = partes[1] if len(partes) > 1 else partes[0]
+    nome = texto_base.split("(")[0].strip()
     return nome
 
 

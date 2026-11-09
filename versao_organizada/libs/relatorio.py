@@ -160,7 +160,10 @@ def gerar_relatorio(
 ) -> None:
     """Gera arquivos de relatório, publica no OneDrive e atualiza CSVs de apoio."""
     if distribuidor_advogados is not None:
-        salvar_relatorios_simulacao_advogados(distribuidor_advogados)
+        try:
+            salvar_relatorios_simulacao_advogados(distribuidor_advogados)
+        except Exception:
+            pass
 
     general_report_filename, manual_report_filename, df_manual = _salvar_relatorios_locais(df)
 

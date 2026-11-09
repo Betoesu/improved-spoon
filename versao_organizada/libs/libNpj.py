@@ -59,14 +59,40 @@ def _atualizar_outros_npj(driver: Any, id_npj: str, outros: str) -> None:
 
 def _atualizar_advogado_npj(driver: Any, id_npj: str, advogado: str) -> None:
     """Busca o advogado no portal, valida a matéria e distribui o processo ao advogado."""
-    advogado_payload = {"nome": advogado.upper()}
+    nome_advogado = str(advogado or "").strip().upper()
+    if not nome_advogado:
+        return
+
+    advogado_payload: Dict[str, Any] = {
+        "codigoTipoAdvogado": 2,
+        "nome": nome_advogado,
+    }
     advogado_api = post_api_navegador(driver, URL_CONSULTA_ADVOGADO, advogado_payload)
+
+    if (
+        not advogado_api
+        or advogado_api.get("status") != "OK"
+        or not advogado_api.get("data")
+    ):
+        advogado_api = post_api_navegador(
+            driver,
+            URL_CONSULTA_ADVOGADO,
+            {"nome": nome_advogado},
+        )
+
     if not advogado_api or advogado_api.get("status") != "OK":
         raise ErroEsperado("Erro ao buscar o advogado")
-    advogado_data = advogado_api["data"][0]
+
+    lista_advogados = advogado_api.get("data") or []
+    if not lista_advogados:
+        # Caso o advogado configurado não retorne registros ativos no portal (data=[]),
+        # mantém a variação 8553 já cadastrada como está para permitir a indicação da publicação.
+        return
+
+    advogado_data = lista_advogados[0]
 
     materia_api = post_api_navegador(driver, URL_VALIDACAO_MATERIA, id_npj)
-    if materia_api.get("status") != "OK":
+    if not materia_api or materia_api.get("status") != "OK":
         raise ErroEsperado("Erro ao indicar a materia")
 
     indicar_payload = {
@@ -266,10 +292,9 @@ def conferir_npj(
     npj_principal = dados_npj["npj_principal"]
     pesquisa = get_processos_npj(driver, npj_principal)
 
-    if pesquisa["quantidade"] == 0:
-        raise ErroEsperado(f"Nenhum npj encontrado para o npj {npj_principal}")
-
     lista_npj = pesquisa.get("listaOcorrencia", [])
+    if pesquisa["quantidade"] == 0 or not lista_npj:
+        raise ErroEsperado(f"Nenhum npj encontrado para o npj {npj_principal}")
 
     if lista_npj[0].get("textoEstadoProcesso") == "Excluido":
         raise ErroEsperado(f"NPJ Principal {lista_npj[0].get('numeroProcessoPrincipalSaida')}-000 excluído")
@@ -390,14 +415,14 @@ def npj_ja_cadastrado(
     dados_npj: Dict[str, Any],
 ) -> Tuple[str, str]:
     """Verifica se o npj já foi cadastrado e atualiza as informações se necessário."""
-    situacao = npj_cadastrado["indicadorProcessoAtivo"]
-    advogado_cadastrado = npj_cadastrado["nomeAdvogadoProcesso"]
-    cnj_cadastrado = numeros["cnj"]
-    outros_cadastrado = numeros["outros"]
+    situacao = npj_cadastrado.get("indicadorProcessoAtivo")
+    advogado_cadastrado = str(npj_cadastrado.get("nomeAdvogadoProcesso") or "")
+    cnj_cadastrado = numeros.get("cnj")
+    outros_cadastrado = numeros.get("outros") or []
 
     cnj = dados_npj["cnj"]
     outros = dados_npj["outros"]
-    advogado = dados_npj["advogado"]
+    advogado = str(dados_npj.get("advogado") or "")
 
     if situacao == "N":
         variacao = str(npj_cadastrado["numeroOrdemVariacaoSaida"]).zfill(3)

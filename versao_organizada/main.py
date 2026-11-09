@@ -86,6 +86,7 @@ DICT_POLO: Dict[str, str] = {
 # Tipos de processo que exigem tratamento manual obrigatório
 TIPOS_PROCESSO_MANUAIS = [
     "CONFLITO DE COMPETÊNCIA",
+    "RECLAMAÇÃO",
     "PETIÇÃO",
     "MANDADO DE SEGURANÇA",
     "Ação Rescisória",
@@ -193,7 +194,9 @@ def _carregar_ou_buscar_publicacoes(
 
 def _montar_pacote_dados_npj(row: pd.Series, numero_unico: str, npj: str, processo: str) -> Dict[str, Any]:
     """Monta o dicionário `dados_npj` (incluindo escolha do advogado por dígito final de `Outros`)."""
-    outros = row["Outros"]
+    outros = str(row["Outros"]).strip()
+    if not outros or outros[-1] not in ADVOGADOS:
+        raise ErroEsperado(f"Número 'Outros' inválido para definir advogado: {outros}")
     advogado = ADVOGADOS[outros[-1]]
 
     polos = (
