@@ -11,7 +11,7 @@ Estrutura dos módulos:
     - dadosStj: Consulta à API do PJe/CNJ e extração de partes, polo e tramitação.
     - bb_n_parte: Regras de descarte automático para publicações "BB Não Parte".
     - conferiNumeroUnico: Resolução do NPJ principal a partir do Número Único CNJ.
-    - distribuidor: Simulação em segundo plano (shadow mode) da distribuição por lista de advogados.
-    - libNpj: Conferência, reativação, atualização (CNJ/Outros/Advogado) e cadastro de NPJ.
+    - distribuidor: Fila circular (round-robin) de advogados para novas distribuições.
+    - libNpj: Conferência, reativação, atualização (CNJ/Outros) e cadastro de NPJ.
     - relatorio: Geração de relatórios Excel locais/OneDrive, atualização Power BI e limpeza.
 """

@@ -43,15 +43,16 @@ MAPA_TRAMITACOES = {
     "SÉTIMA TURMA": "07 TURMA",
     "OITAVA TURMA": "08 TURMA",
     "NONA TURMA": "09 TURMA",
-    "PRIMEIRA SEÇÃO": "01 SEÇÃO",
-    "SEGUNDA SEÇÃO": "02 SEÇÃO",
-    "TERCEIRA SEÇÃO": "03 SEÇÃO",
-    "QUARTA SEÇÃO": "04 SEÇÃO",
-    "QUINTA SEÇÃO": "05 SEÇÃO",
-    "SEXTA SEÇÃO": "06 SEÇÃO",
-    "SÉTIMA SEÇÃO": "07 SEÇÃO",
-    "OITAVA SEÇÃO": "08 SEÇÃO",
-    "NONA SEÇÃO": "09 SEÇÃO",
+    "PRIMEIRA SEÇÃO": "01 SECAO",
+    "SEGUNDA SEÇÃO": "02 SECAO",
+    "TERCEIRA SEÇÃO": "03 SECAO",
+    "QUARTA SEÇÃO": "04 SECAO",
+    "QUINTA SEÇÃO": "05 SECAO",
+    "SEXTA SEÇÃO": "06 SECAO",
+    "SÉTIMA SEÇÃO": "07 SECAO",
+    "OITAVA SEÇÃO": "08 SECAO",
+    "NONA SEÇÃO": "09 SECAO",
+    "CORTE ESPECIAL": "CORTE ESPECIAL",
 }
 
 POLO_MAPPING = {"A": "Ativo", "P": "Passivo", "N": "Neutro"}
@@ -210,7 +211,7 @@ def _identificar_tramitacao(dados_item: Dict[str, Any], texto_publicacao: str) -
     orgao = dados_item.get("nomeOrgao", "Indefinido").upper()
     tramitacao = "Indefinido"
 
-    if "SEÇÃO" in orgao or "TURMA" in orgao:
+    if "SEÇÃO" in orgao or "TURMA" in orgao or "CORTE ESPECIAL" in orgao:
         for chave, valor in MAPA_TRAMITACOES.items():
             if chave in orgao:
                 tramitacao = valor

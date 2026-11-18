@@ -89,7 +89,7 @@ def _salvar_relatorios_locais(df: pd.DataFrame) -> Tuple[str, str, pd.DataFrame]
 
 def salvar_relatorios_simulacao_advogados(distribuidor_advogados: Any) -> Tuple[str, str]:
     """
-    Gera e salva os relatórios de simulação da `versao_lista_advogados` na pasta `Relatorios/`:
+    Gera e salva os relatórios de distribuição por advogado na pasta `Relatorios/`:
         1) TXT (`STJ_distribuicao_advogados_<data>.txt`) com a contagem e detalhamento por advogado.
         2) XLSX (`STJ_distribuicao_advogados_<data>.xlsx`) passo a passo por coluna e contagem
            por advogado nas últimas colunas.
@@ -107,6 +107,12 @@ def salvar_relatorios_simulacao_advogados(distribuidor_advogados: Any) -> Tuple[
     df_xlsx.to_excel(xlsx_report_filename, index=False)
 
     return txt_report_filename, xlsx_report_filename
+
+
+def salvar_relatorio_txt_advogados(distribuidor_advogados: Any) -> str:
+    """Mantido por compatibilidade: gera os relatórios TXT e XLSX e retorna o caminho do TXT."""
+    txt_report_filename, _ = salvar_relatorios_simulacao_advogados(distribuidor_advogados)
+    return txt_report_filename
 
 
 def _publicar_no_onedrive(
@@ -157,11 +163,12 @@ def gerar_relatorio(
     publicacoes_txt: str,
     dados_bbts: List[Dict[str, Any]],
     distribuidor_advogados: Optional[Any] = None,
-) -> None:
-    """Gera arquivos de relatório, publica no OneDrive e atualiza CSVs de apoio."""
+) -> Optional[str]:
+    """Gera arquivos de relatório (Excel e TXT/XLSX de advogados), publica no OneDrive e atualiza CSVs de apoio."""
+    txt_report_filename: Optional[str] = None
     if distribuidor_advogados is not None:
         try:
-            salvar_relatorios_simulacao_advogados(distribuidor_advogados)
+            txt_report_filename, _ = salvar_relatorios_simulacao_advogados(distribuidor_advogados)
         except Exception:
             pass
 
@@ -184,3 +191,4 @@ def gerar_relatorio(
     )
 
     _limpar_cache_execucao(publicacoes_txt, excel_automacao)
+    return txt_report_filename

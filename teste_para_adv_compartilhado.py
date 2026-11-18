@@ -118,18 +118,25 @@ def normalizar_npj_principal(entrada: str) -> Tuple[str, str]:
 def listar_todos_terceiros(driver: Any, id_npj_principal: Any) -> List[Dict[str, Any]]:
     """
     Consulta TODAS as ocorrências da aba 'Pessoas do Processo -> Terceiros' (polo 4)
-    para diagnóstico completo (mostra advogados comuns e advogados compartilhados).
+    via API `v2` (com fallback para `v1`) para diagnóstico completo.
     """
     todos: List[Dict[str, Any]] = []
     posicao = 0
     paginas = 0
 
     while paginas < 20:
-        url = (
-            f"https://juridico.intranet.bb.com.br/paj/resources/app/v1/pessoas/"
+        url_v2 = (
+            f"https://juridico.intranet.bb.com.br/paj/resources/app/v2/pessoas/"
             f"listarPessoasProcesso/{id_npj_principal}/4/{posicao}"
         )
-        response = get_api_navegador(driver, url)
+        response = get_api_navegador(driver, url_v2)
+        if not response or response.get("statusCode") != 200:
+            url_v1 = (
+                f"https://juridico.intranet.bb.com.br/paj/resources/app/v1/pessoas/"
+                f"listarPessoasProcesso/{id_npj_principal}/4/{posicao}"
+            )
+            response = get_api_navegador(driver, url_v1)
+
         if not response or response.get("statusCode") != 200:
             break
 
@@ -142,7 +149,11 @@ def listar_todos_terceiros(driver: Any, id_npj_principal: Any) -> List[Dict[str,
             if isinstance(item, dict):
                 todos.append(item)
 
-        indicador_continuacao = str(data.get("indicadorContinuacao") or "").upper()
+        indicador_continuacao = str(
+            data.get("indicadorContinuacaoPesquisa")
+            or data.get("indicadorContinuacao")
+            or ""
+        ).upper()
         if indicador_continuacao == "S" and len(ocorrencias) >= 10:
             posicao = 11 if posicao == 0 else posicao + 10
             paginas += 1
@@ -232,6 +243,11 @@ def analisar_npj(
     if not terceiros_raw:
         print("    (Nenhum registro retornado na aba Terceiros)")
     else:
+        mapa_cod_tipo = {
+            36: "Advogado Compartilhado (código 36)",
+            32: "Terceiro / Órgão / Interessado (código 32)",
+            7: "Advogado Adverso (código 7)",
+        }
         for i, item in enumerate(terceiros_raw, start=1):
             nome = (
                 item.get("nomeRazaoSocialClientePessoa")
@@ -239,13 +255,16 @@ def analisar_npj(
                 or item.get("nomeRazaoSocialAdvogado")
                 or "(Sem nome)"
             ).strip()
-            tipo_rel = item.get("textoTipoRelacionamentoPessoaProcesso") or "(sem textoTipoRelacionamentoPessoaProcesso)"
-            desc_rel = item.get("textoDescricaoRelacao") or ""
             cod_rel = item.get("codigoTipoRelacionamentoPessoaProcesso")
+            tipo_rel = (
+                item.get("textoTipoRelacionamentoPessoaProcesso")
+                or mapa_cod_tipo.get(cod_rel, f"Código {cod_rel}")
+            )
+            desc_rel = item.get("textoDescricaoRelacao") or ""
             eh_comp = _eh_item_advogado_compartilhado(item)
             listas_tag = classificar_advogado_nas_listas(distribuidor_base, nome)
 
-            extra_cod = f" | codTipoRel={cod_rel}" if cod_rel is not None else ""
+            extra_cod = f" | codigoTipoRelacionamentoPessoaProcesso={cod_rel}" if cod_rel is not None else ""
             extra_desc = f" | desc='{desc_rel}'" if desc_rel else ""
             marca_comp = "SIM -> DETECTADO COMO ADV. COMPARTILHADO" if eh_comp else "Não"
             print(

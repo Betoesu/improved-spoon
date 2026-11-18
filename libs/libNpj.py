@@ -11,11 +11,7 @@ from DijurLib.api.cadastro_npj import cadastro
 from DijurLib.api.consulta import get_processos_npj
 from DijurLib.api.npj import npj_dados_processo, npj_pessoas_processo, reativar_npj
 
-from libs.distribuidor import (
-    DistribuidorAdvogados,
-    criar_passos_vazios,
-    nomes_advogados_correspondem,
-)
+from libs.distribuidor import DistribuidorAdvogados
 from libs.erros import ErroEsperado
 from libs.helper import check_partes, update_log
 
@@ -23,7 +19,11 @@ DEPENDENCIA_ALVO = 8553
 UF_PADRAO_STJ = "DF"
 CODIGO_TIPO_NUMERACAO_OUTROS = 3
 
-CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO: Optional[int] = None
+# Na API de Terceiros (listarPessoasProcesso/{id}/4/0), o Portal Jurídico identifica:
+#   - codigoTipoRelacionamentoPessoaProcesso = 36 -> Advogado Compartilhado
+#   - codigoTipoRelacionamentoPessoaProcesso = 32 -> Terceiro / Órgão / Interessado
+#   - codigoTipoRelacionamentoPessoaProcesso = 7  -> Advogado Adverso
+CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO: Optional[int] = 36
 
 URL_CADASTRO_NUMERO_CNJ = "https://juridico.intranet.bb.com.br/paj/resources/app/v1/processo/cadastro/numero/cnj"
 URL_CADASTRO_NUMERO_OUTROS = "https://juridico.intranet.bb.com.br/paj/resources/app/v1/processo/cadastro/numero"
@@ -89,8 +89,6 @@ def _atualizar_advogado_npj(driver: Any, id_npj: str, advogado: str) -> None:
 
     lista_advogados = advogado_api.get("data") or []
     if not lista_advogados:
-        # Caso o advogado configurado não retorne registros ativos no portal (data=[]),
-        # mantém a variação 8553 já cadastrada como está para permitir a indicação da publicação.
         return
 
     advogado_data = lista_advogados[0]
@@ -114,9 +112,18 @@ def _atualizar_advogado_npj(driver: Any, id_npj: str, advogado: str) -> None:
 def _eh_item_advogado_compartilhado(item: Dict[str, Any]) -> bool:
     """
     Verifica se um registro da aba 'Pessoas do Processo -> Terceiros' corresponde
-    ao tipo 'Advogado Compartilhado', utilizando o campo oficial do Portal Jurídico
-    `textoTipoRelacionamentoPessoaProcesso` (coluna 'Tipo' da tabela de Terceiros).
+    ao tipo 'Advogado Compartilhado':
+        1) Pelo código numérico oficial da API (`codigoTipoRelacionamentoPessoaProcesso == 36`);
+        2) Ou pelo campo textual (`textoTipoRelacionamentoPessoaProcesso == 'ADVOGADO COMPARTILHADO'`).
     """
+    if CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO is not None:
+        cod_rel = item.get("codigoTipoRelacionamentoPessoaProcesso")
+        try:
+            if cod_rel is not None and int(cod_rel) == int(CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO):
+                return True
+        except (ValueError, TypeError):
+            pass
+
     texto_tipo = str(item.get("textoTipoRelacionamentoPessoaProcesso") or "").strip().upper()
     if texto_tipo:
         return (
@@ -124,18 +131,15 @@ def _eh_item_advogado_compartilhado(item: Dict[str, Any]) -> bool:
             or "ADVOGADO COMPARTILHAD" in texto_tipo
         )
 
-    if CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO is not None:
-        if item.get("codigoTipoRelacionamentoPessoaProcesso") == CODIGO_RELACIONAMENTO_ADVOGADO_COMPARTILHADO:
-            return True
-
     return False
 
 
 def _obter_advogados_compartilhados_principal(driver: Any, id_npj_principal: Any) -> List[str]:
     """
-    Consulta (somente leitura) a aba 'Pessoas do Processo -> Terceiros' (polo 4) do NPJ Principal
-    (variação 000) via API do Portal Jurídico (`listarPessoasProcesso/{idNpj}/4/{pos}`),
-    para alimentar a simulação em segundo plano da `versao_lista_advogados`.
+    Consulta a aba 'Pessoas do Processo -> Terceiros' (polo 4) do NPJ Principal (variação 000)
+    via API do Portal Jurídico (`v2/pessoas/listarPessoasProcesso/{idNpj}/4/{pos}` com fallback
+    para `v1`), percorrendo a paginação quando `indicadorContinuacaoPesquisa == 'S'`, e retorna
+    os nomes (`nomeRazaoSocialClientePessoa`) cujo tipo é 'Advogado Compartilhado' (código 36).
     """
     advogados_compartilhados: List[str] = []
     vistos = set()
@@ -145,11 +149,18 @@ def _obter_advogados_compartilhados_principal(driver: Any, id_npj_principal: Any
         paginas_consultadas = 0
 
         while paginas_consultadas < 20:
-            url_terceiros = (
-                f"https://juridico.intranet.bb.com.br/paj/resources/app/v1/pessoas/"
+            url_v2 = (
+                f"https://juridico.intranet.bb.com.br/paj/resources/app/v2/pessoas/"
                 f"listarPessoasProcesso/{id_npj_principal}/4/{posicao}"
             )
-            response = get_api_navegador(driver, url_terceiros)
+            response = get_api_navegador(driver, url_v2)
+            if not response or response.get("statusCode") != 200:
+                url_v1 = (
+                    f"https://juridico.intranet.bb.com.br/paj/resources/app/v1/pessoas/"
+                    f"listarPessoasProcesso/{id_npj_principal}/4/{posicao}"
+                )
+                response = get_api_navegador(driver, url_v1)
+
             if not response or response.get("statusCode") != 200:
                 break
 
@@ -172,7 +183,11 @@ def _obter_advogados_compartilhados_principal(driver: Any, id_npj_principal: Any
                         vistos.add(nome.upper())
                         advogados_compartilhados.append(nome)
 
-            indicador_continuacao = str(data.get("indicadorContinuacao") or "").upper()
+            indicador_continuacao = str(
+                data.get("indicadorContinuacaoPesquisa")
+                or data.get("indicadorContinuacao")
+                or ""
+            ).upper()
             if indicador_continuacao == "S" and len(ocorrencias) >= 10:
                 posicao = 11 if posicao == 0 else posicao + 10
                 paginas_consultadas += 1
@@ -184,126 +199,11 @@ def _obter_advogados_compartilhados_principal(driver: Any, id_npj_principal: Any
     return advogados_compartilhados
 
 
-def _simular_lista_advogados_ja_cadastrado(
-    driver: Any,
-    distribuidor_advogados: DistribuidorAdvogados,
-    situacao_original: str,
-    advogado_cadastrado_original: str,
-    variacao_str: str,
-    npj_principal_str: str,
-    principal_baixado: bool,
-    id_npj_principal: Any,
-    variacoes_8553: List[Dict[str, Any]],
-    dados_npj: Dict[str, Any],
-) -> None:
-    """
-    Executa apenas em memória (shadow mode) o que a `versao_lista_advogados` faria
-    para um NPJ já cadastrado (Ativo ou Reativado), sem realizar nenhuma alteração no portal.
-    """
-    try:
-        mascara_var = f"{npj_principal_str[:4]}/{npj_principal_str[4:]}-{variacao_str}"
-        id_pub = str(dados_npj.get("id_publicacao", ""))
-        cnj_pub = str(dados_npj.get("publicacao", ""))
-        advogado_legado = str(dados_npj.get("advogado", ""))
-        outros_val = str(dados_npj.get("outros", ""))
-
-        if situacao_original == "N" or principal_baixado:
-            advogados_compartilhados: List[str] = []
-            if (
-                distribuidor_advogados.buscar_na_adest(advogado_cadastrado_original) is None
-                and distribuidor_advogados.buscar_na_adrec_todos(advogado_cadastrado_original) is None
-            ):
-                alvo_principal = id_npj_principal or npj_principal_str
-                advogados_compartilhados = _obter_advogados_compartilhados_principal(
-                    driver, alvo_principal
-                )
-
-            advogado_simulado, _, motivo, passos = (
-                distribuidor_advogados.definir_advogado_reativacao(
-                    advogado_npj_baixado=advogado_cadastrado_original,
-                    advogados_compartilhados_principal=advogados_compartilhados,
-                    variacoes_8553=variacoes_8553,
-                    npj_principal=npj_principal_str,
-                    variacao_reativada=variacao_str,
-                )
-            )
-            distribuidor_advogados.registrar_publicacao_advogado(
-                advogado=advogado_simulado,
-                tipo="Reativada",
-                publicacao=cnj_pub,
-                npj=mascara_var,
-                regra=motivo,
-                id_publicacao=id_pub,
-                passos=passos,
-                advogado_legado=advogado_legado,
-                outros=outros_val,
-            )
-        else:
-            passos = criar_passos_vazios()
-            passos["Variação Já Cadastrada e Ativa?"] = "Sim"
-            distribuidor_advogados.registrar_publicacao_advogado(
-                advogado=advogado_cadastrado_original,
-                tipo="Já Cadastrada",
-                publicacao=cnj_pub,
-                npj=mascara_var,
-                regra="Regra 3.0 (Variação já cadastrada e ativa | Advogado atual mantido)",
-                id_publicacao=id_pub,
-                passos=passos,
-                advogado_legado=advogado_legado,
-                outros=outros_val,
-            )
-    except Exception:
-        pass
-
-
-def _simular_lista_advogados_nova_variacao(
-    driver: Any,
-    distribuidor_advogados: DistribuidorAdvogados,
-    npj_principal_str: str,
-    id_npj_principal: Any,
-    numero_processo_criado: Any,
-    variacoes_8553: List[Dict[str, Any]],
-    dados_npj: Dict[str, Any],
-) -> None:
-    """
-    Executa apenas em memória (shadow mode) o que a `versao_lista_advogados` faria
-    para uma Nova Variação, sem realizar nenhuma alteração na distribuição real do portal.
-    """
-    try:
-        id_pub = str(dados_npj.get("id_publicacao", ""))
-        cnj_pub = str(dados_npj.get("publicacao", ""))
-        advogado_legado = str(dados_npj.get("advogado", ""))
-        outros_val = str(dados_npj.get("outros", ""))
-        advogados_compartilhados = _obter_advogados_compartilhados_principal(
-            driver, id_npj_principal
-        )
-        advogado_simulado, motivo_distribuicao, passos = (
-            distribuidor_advogados.definir_advogado_nova_variacao(
-                advogados_compartilhados,
-                variacoes_8553,
-                npj_principal=npj_principal_str,
-            )
-        )
-        distribuidor_advogados.registrar_publicacao_advogado(
-            advogado=advogado_simulado,
-            tipo="Nova Variação",
-            publicacao=cnj_pub,
-            npj=f"{npj_principal_str[:4]}/{npj_principal_str[4:]} (ID {numero_processo_criado})",
-            regra=motivo_distribuicao,
-            id_publicacao=id_pub,
-            passos=passos,
-            advogado_legado=advogado_legado,
-            outros=outros_val,
-        )
-    except Exception:
-        pass
-
-
 def conferir_npj(
     driver: Any,
     dados_npj: Dict[str, Any],
+    distribuidor_advogados: DistribuidorAdvogados,
     log_widget: Any,
-    distribuidor_advogados: Optional[DistribuidorAdvogados] = None,
 ) -> Tuple[str, bool, str]:
     """Confere existência de NPJ correspondente; reativa/atualiza ou cadastra novo."""
     npj_principal = dados_npj["npj_principal"]
@@ -323,20 +223,16 @@ def conferir_npj(
     if any(p.get("indicadorProcessoConfidencial") == "S" for p in lista_npj):
         raise ErroEsperado("NPJ confidencial encontrado")
 
-    lista_npj = [p for p in lista_npj if p.get("codigoPrefixoDependencia") == DEPENDENCIA_ALVO]
+    lista_npj_8553 = [p for p in lista_npj if p.get("codigoPrefixoDependencia") == DEPENDENCIA_ALVO]
     variacoes_8553 = [
-        dict(p) for p in lista_npj if int(p.get("numeroOrdemVariacaoSaida", 0)) > 0
+        dict(p) for p in lista_npj_8553 if int(p.get("numeroOrdemVariacaoSaida", 0)) > 0
     ]
     publicacao = dados_npj.get("publicacao")
 
-    for npj_cadastrado in lista_npj:
+    for npj_cadastrado in lista_npj_8553:
         id_npj = npj_cadastrado["numeroProcesso"]
         numeros = npj_dados_processo(driver, id_npj, ["numeros"])
         if numeros["publicacao"] == publicacao:
-            situacao_original = str(npj_cadastrado.get("indicadorProcessoAtivo", ""))
-            advogado_cadastrado_original = str(npj_cadastrado.get("nomeAdvogadoProcesso", ""))
-            variacao_str = str(npj_cadastrado.get("numeroOrdemVariacaoSaida", 0)).zfill(3)
-
             update_log(log_widget, "NPJ já cadastrado, conferindo dados...")
             if baixado:
                 npj_incidental = f"{npj_principal}000"
@@ -346,22 +242,18 @@ def conferir_npj(
                 if reativacao_respose["status"] != "OK":
                     raise ErroEsperado("Erro ao reativar o processo principal")
 
-            id_npj, reativacao = npj_ja_cadastrado(driver, id_npj, npj_cadastrado, numeros, dados_npj)
-
-            if distribuidor_advogados is not None:
-                _simular_lista_advogados_ja_cadastrado(
-                    driver=driver,
-                    distribuidor_advogados=distribuidor_advogados,
-                    situacao_original=situacao_original,
-                    advogado_cadastrado_original=advogado_cadastrado_original,
-                    variacao_str=variacao_str,
-                    npj_principal_str=str(npj_principal),
-                    principal_baixado=baixado,
-                    id_npj_principal=id_npj_principal,
-                    variacoes_8553=variacoes_8553,
-                    dados_npj=dados_npj,
-                )
-
+            id_npj, reativacao = npj_ja_cadastrado(
+                driver,
+                id_npj,
+                npj_cadastrado,
+                numeros,
+                dados_npj,
+                distribuidor_advogados,
+                log_widget,
+                principal_baixado=baixado,
+                id_npj_principal=id_npj_principal,
+                variacoes_8553=variacoes_8553,
+            )
             return id_npj, True, reativacao
         time.sleep(0.2)
 
@@ -390,7 +282,25 @@ def conferir_npj(
         if reativacao_respose["status"] != "OK":
             raise ErroEsperado("Erro ao reativar o processo principal")
 
-    update_log(log_widget, f"Cadastrando npj incidental {npj_principal}...")
+    # --------------------------------------------------------------------------
+    # DISTRIBUIÇÃO DE NOVA VARIAÇÃO:
+    # 0) Verifica condução compartilhada no NPJ principal (000) -> Advogado ADEST
+    # 1) Se não houver, verifica variações da 8553 (1.1 única, 1.2 maior p/ menor, 1.3 sem variação)
+    # --------------------------------------------------------------------------
+    advogados_compartilhados = _obter_advogados_compartilhados_principal(
+        driver, id_npj_principal
+    )
+    advogado, motivo_distribuicao = distribuidor_advogados.definir_advogado_nova_variacao(
+        advogados_compartilhados,
+        variacoes_8553,
+        npj_principal=str(npj_principal),
+    )
+    update_log(
+        log_widget,
+        f"Cadastrando nova variação para NPJ {npj_principal} | {motivo_distribuicao}",
+    )
+
+    dados_npj["advogado"] = advogado
     try:
         hora = time.strftime("%H:%M:%S")
         numeroProcessoCriado, conferePartes = cadastro(
@@ -402,7 +312,7 @@ def conferir_npj(
             publicacao,
             dados_npj.get("polos"),
             dados_npj.get("tramitacao"),
-            dados_npj.get("advogado"),
+            advogado,
             dados_npj.get("processo"),
             "STJ",
             dados_npj.get("outros"),
@@ -410,16 +320,16 @@ def conferir_npj(
     except Exception as e:
         raise ErroEsperado(f"Cadastro incompleto: {e}")
 
-    if distribuidor_advogados is not None:
-        _simular_lista_advogados_nova_variacao(
-            driver=driver,
-            distribuidor_advogados=distribuidor_advogados,
-            npj_principal_str=str(npj_principal),
-            id_npj_principal=id_npj_principal,
-            numero_processo_criado=numeroProcessoCriado,
-            variacoes_8553=variacoes_8553,
-            dados_npj=dados_npj,
-        )
+    distribuidor_advogados.registrar_publicacao_advogado(
+        advogado=advogado,
+        tipo="Nova Variação",
+        publicacao=str(publicacao),
+        npj=f"{npj_principal[:4]}/{npj_principal[4:]} (ID {numeroProcessoCriado})",
+        regra=motivo_distribuicao,
+        id_publicacao=str(dados_npj.get("id_publicacao", "")),
+        advogado_legado=str(dados_npj.get("advogado_legado", "")),
+        outros=str(dados_npj.get("outros", "")),
+    )
 
     return numeroProcessoCriado, conferePartes, hora
 
@@ -430,8 +340,23 @@ def npj_ja_cadastrado(
     npj_cadastrado: Dict[str, Any],
     numeros: Dict[str, Any],
     dados_npj: Dict[str, Any],
+    distribuidor_advogados: DistribuidorAdvogados,
+    log_widget: Any,
+    principal_baixado: bool = False,
+    id_npj_principal: Optional[Any] = None,
+    variacoes_8553: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str]:
-    """Verifica se o npj já foi cadastrado e atualiza as informações se necessário."""
+    """
+    Verifica se o NPJ já foi cadastrado e atualiza CNJ/Outros se necessário.
+
+    Se o processo precisou ser reativado (`situacao == 'N'` ou `principal_baixado`),
+    aplica a Regra de Redistribuição de Variações Reativadas:
+    1. Se o advogado da variação estiver em ADEST ou TODOS da ADREC -> mantém (reativa e distribui).
+    2. Se não estiver -> verifica Advogado Compartilhado no NPJ 000 (ADEST) -> Variações da 8553
+       (1.1 única, 1.2 maior p/ menor, 1.3 sem variação) -> Fila dos 6 da ADREC.
+    3. Se a publicação reativada foi para um advogado dos 6 da ADREC e o próximo da fila é ele,
+       pula para o próximo nome da fila para não repetir 2x seguidas.
+    """
     situacao = npj_cadastrado.get("indicadorProcessoAtivo")
     advogado_cadastrado = str(npj_cadastrado.get("nomeAdvogadoProcesso") or "")
     cnj_cadastrado = numeros.get("cnj")
@@ -439,11 +364,12 @@ def npj_ja_cadastrado(
 
     cnj = dados_npj["cnj"]
     outros = dados_npj["outros"]
-    advogado = str(dados_npj.get("advogado") or "")
+    variacao = str(npj_cadastrado.get("numeroOrdemVariacaoSaida", 0)).zfill(3)
+    npj_principal_str = str(dados_npj["npj_principal"])
+    mascara_var = f"{npj_principal_str[:4]}/{npj_principal_str[4:]}-{variacao}"
 
     if situacao == "N":
-        variacao = str(npj_cadastrado["numeroOrdemVariacaoSaida"]).zfill(3)
-        npj_incidental = f"{dados_npj['npj_principal']}{variacao}"
+        npj_incidental = f"{npj_principal_str}{variacao}"
         reativacao_respose = reativar_npj(driver, "Agendar Publicação.", npj_incidental, id_npj)
 
         if reativacao_respose["status"] != "OK":
@@ -459,9 +385,58 @@ def npj_ja_cadastrado(
     if outros not in outros_cadastrado:
         _atualizar_outros_npj(driver, id_npj, outros)
 
-    if advogado_cadastrado not in advogado and not nomes_advogados_correspondem(
-        advogado_cadastrado, advogado
-    ):
-        _atualizar_advogado_npj(driver, id_npj, advogado)
+    if situacao == "N" or principal_baixado:
+        # Só consulta a API de Terceiros do NPJ 000 caso o advogado atual não esteja em ADEST/TODOS ADREC
+        advogados_compartilhados: List[str] = []
+        if (
+            distribuidor_advogados.buscar_na_adest(advogado_cadastrado) is None
+            and distribuidor_advogados.buscar_na_adrec_todos(advogado_cadastrado) is None
+        ):
+            alvo_principal = id_npj_principal or dados_npj["npj_principal"]
+            advogados_compartilhados = _obter_advogados_compartilhados_principal(
+                driver, alvo_principal
+            )
+
+        advogado_definido, manteve_advogado, motivo = (
+            distribuidor_advogados.definir_advogado_reativacao(
+                advogado_npj_baixado=advogado_cadastrado,
+                advogados_compartilhados_principal=advogados_compartilhados,
+                variacoes_8553=variacoes_8553 or [],
+                npj_principal=npj_principal_str,
+                variacao_reativada=variacao,
+            )
+        )
+        dados_npj["advogado"] = advogado_definido
+
+        if manteve_advogado:
+            update_log(log_widget, f"NPJ reativado ({mascara_var}) | {motivo}")
+        else:
+            update_log(log_widget, f"NPJ reativado ({mascara_var}) | {motivo}")
+            _atualizar_advogado_npj(driver, id_npj, advogado_definido)
+
+        distribuidor_advogados.registrar_publicacao_advogado(
+            advogado=advogado_definido,
+            tipo="Reativada",
+            publicacao=str(dados_npj.get("publicacao", "")),
+            npj=mascara_var,
+            regra=motivo,
+            id_publicacao=str(dados_npj.get("id_publicacao", "")),
+            advogado_legado=str(dados_npj.get("advogado_legado", "")),
+            outros=str(outros),
+        )
+    else:
+        dados_npj["advogado"] = distribuidor_advogados.padronizar_nome_advogado(
+            advogado_cadastrado
+        )
+        distribuidor_advogados.registrar_publicacao_advogado(
+            advogado=advogado_cadastrado,
+            tipo="Já Cadastrada",
+            publicacao=str(dados_npj.get("publicacao", "")),
+            npj=mascara_var,
+            regra="Regra 3.0 (Variação já cadastrada e ativa | Advogado atual mantido)",
+            id_publicacao=str(dados_npj.get("id_publicacao", "")),
+            advogado_legado=str(dados_npj.get("advogado_legado", "")),
+            outros=str(outros),
+        )
 
     return id_npj, reativacao

@@ -1,18 +1,40 @@
 # -*- coding: utf-8 -*-
 """
-Simulação (shadow execution) de distribuição de advogados (ADEST / ADREC)
-para novas variações, variações reativadas e geração de relatórios em TXT e XLSX.
+Controle de distribuição de advogados (ADEST / ADREC) para novas variações,
+variações reativadas e geração de relatórios em TXT e XLSX.
 
-Este módulo reproduz exatamente a lógica da `versao_lista_advogados` em segundo
-plano (sem interferir nas regras de negócio da `versao_organizada`), registrando
-cada passo percorrido na árvore de decisão para gerar:
-    1) Relatório TXT comparativo entre a Nova Lógica (Lista Aleatória / Shadow) e a
-       Lógica Antiga (Último Número Pequeno / Dígito final de 'Outros'), além do
-       detalhamento de quais variações 8553 foram percorridas e por que cada uma
-       foi ou não escolhida.
-    2) Relatório XLSX passo a passo (com células vazias nos passos não percorridos
-       por cada publicação) e resumo nas últimas colunas com o total atribuído
-       a cada advogado (Reativadas e Novas Variações).
+Regras para Distribuição de Novas Variações:
+    0. Condução Compartilhada no NPJ Principal (variação 000):
+       - Verifica em "Pessoas do Processo -> Terceiros" do NPJ 000 se existe
+         `Tipo = Advogado Compartilhado`.
+       - Se houver E o advogado estiver na lista `advogados_adest`, distribui para ele.
+    1. Caso contrário, verifica se existem variações da dependência 8553:
+       - 1.1 Se tiver somente 1 variação da 8553:
+             Verifica o advogado dessa variação:
+             -> Se estiver na lista `advogados_adest`, distribui para ele;
+             -> Se não, se estiver na lista `advogados_adrec_todos`, distribui para ele;
+             -> Se não, distribui para o próximo da fila dos `6 advogados da ADREC`.
+       - 1.2 Se houver mais de 1 variação da 8553:
+             Ordena as variações da 8553 da MAIOR para a MENOR (ex: -008, depois -005, depois -002)
+             e verifica cada uma nessa ordem decrescente:
+             -> Se o advogado estiver na lista `advogados_adest`, distribui para ele;
+             -> Se não, se estiver na lista `advogados_adrec_todos`, distribui para ele;
+             -> Se não estiver em nenhuma, passa para a próxima variação 8553 (da maior para a menor);
+             -> Se acabarem todas as variações 8553 sem encontrar advogado nas listas, distribui para
+                o próximo da fila dos `6 advogados da ADREC`.
+       - 1.3 Se não houver variação da 8553:
+             -> Distribui para o próximo da fila dos `6 advogados da ADREC`.
+
+Regras para Redistribuição de Variações Reativadas:
+    1. Verifica se o advogado atual da variação reativada está em `advogados_adest`
+       ou em `advogados_adrec_todos`:
+       - Se SIM: mantém o advogado atual (reativa e distribui para ele).
+       - Se NÃO: aplica a mesma árvore de decisão acima (Condução Compartilhada no NPJ 000
+         -> Variações da 8553 única ou da maior para a menor -> Fila dos 6 advogados da ADREC).
+    2. Regra anti-"duas vezes seguidas" na reativação:
+       - Se a publicação reativada foi distribuída para um advogado específico dos
+         `6 advogados da ADREC` E o próximo nome da fila circular for ele mesmo,
+         pula para o próximo nome da fila (evitando que ele receba duas vezes seguidas).
 """
 
 from datetime import datetime
@@ -190,7 +212,7 @@ class DistribuidorAdvogados:
     """
     Gerencia as listas de advogados (ADEST, 6 da ADREC e TODOS da ADREC), a fila
     circular embaralhada dos 6 advogados da ADREC e a contabilização de publicações
-    distribuídas para cada advogado (tanto na Nova Lógica em shadow quanto na Lógica Antiga).
+    distribuídas para cada advogado (tanto na Nova Lógica quanto no comparativo com a Lógica Antiga).
     """
 
     def __init__(
@@ -233,6 +255,7 @@ class DistribuidorAdvogados:
         self.total_distribuidos: int = 0
         self.registros_distribuicao: List[Dict[str, Any]] = []
         self.ultimo_percurso_8553: List[str] = []
+        self.ultimos_passos: Dict[str, str] = criar_passos_vazios()
 
     def resolver_nome_truncado(self, nome_consulta: Optional[str]) -> str:
         """
@@ -324,16 +347,6 @@ class DistribuidorAdvogados:
             return f"{principal_limpo[:4]}/{principal_limpo[4:]}-{num_var}"
         return f"-{num_var}"
 
-    def _descrever_advogado_portal(self, nome_bruto: Optional[str]) -> str:
-        """Formata o nome lido no portal indicando se houve reconhecimento de nome truncado (>30 chars)."""
-        bruto = str(nome_bruto or "").strip()
-        if not bruto:
-            return "SEM ADVOGADO CADASTRADO"
-        resolvido = self.resolver_nome_truncado(bruto)
-        if _normalizar_texto_plano(resolvido) != _normalizar_texto_plano(bruto):
-            return f"'{bruto}' [nome truncado 30 chars -> reconhecido como '{resolvido}']"
-        return f"'{bruto}'"
-
     def _aplicar_arvore_compartilhado_e_8553(
         self,
         advogados_compartilhados_principal: List[str],
@@ -362,6 +375,7 @@ class DistribuidorAdvogados:
             if adv_adest:
                 passos["Advogado Compartilhado e é da ADEST?"] = "Sim"
                 self.ultimo_percurso_8553 = []
+                self.ultimos_passos = passos
                 return (
                     adv_adest,
                     f"Regra 1.0 (Condução compartilhada no NPJ 000 | Advogado na ADEST): {adv_adest}",
@@ -386,6 +400,7 @@ class DistribuidorAdvogados:
             adv_adest = self.buscar_na_adest(adv_var)
             if adv_adest:
                 passos["1 Variação 8553: Advogado é da ADEST?"] = "Sim"
+                self.ultimos_passos = passos
                 return (
                     adv_adest,
                     f"Regra 1.1.1 (Única variação 8553 -{num_var} | Advogado na ADEST): {adv_adest}",
@@ -399,6 +414,7 @@ class DistribuidorAdvogados:
             adv_adrec_todos = self.buscar_na_adrec_todos(adv_var)
             if adv_adrec_todos:
                 passos["1 Variação 8553: Advogado é de TODOS ADREC?"] = "Sim"
+                self.ultimos_passos = passos
                 return (
                     adv_adrec_todos,
                     f"Regra 1.1.2 (Única variação 8553 -{num_var} | Advogado em TODOS ADREC): {adv_adrec_todos}",
@@ -409,6 +425,7 @@ class DistribuidorAdvogados:
 
             passos["1 Variação 8553: Advogado é de TODOS ADREC?"] = "Não"
             passos["Fila dos 6 Advogados da ADREC?"] = "Sim"
+            self.ultimos_passos = passos
             proximo = self.proximo_advogado()
             return (
                 proximo,
@@ -442,6 +459,7 @@ class DistribuidorAdvogados:
                         f"{npj_var_fmt} ({adv_var or 'Sem Advogado'}): escolhido (está na ADEST)"
                     )
                     self.ultimo_percurso_8553 = percurso_8553
+                    self.ultimos_passos = passos
                     return (
                         adv_adest,
                         f"Regra 1.2.1 (Variação 8553 -{num_var} [da maior p/ menor] | Advogado na ADEST): {adv_adest}",
@@ -458,6 +476,7 @@ class DistribuidorAdvogados:
                         f"{npj_var_fmt} ({adv_var or 'Sem Advogado'}): escolhido (está em TODOS ADREC)"
                     )
                     self.ultimo_percurso_8553 = percurso_8553
+                    self.ultimos_passos = passos
                     return (
                         adv_adrec_todos,
                         f"Regra 1.2.2 (Variação 8553 -{num_var} [da maior p/ menor] | Advogado em TODOS ADREC): {adv_adrec_todos}",
@@ -485,6 +504,7 @@ class DistribuidorAdvogados:
             proximo = self.proximo_advogado()
             detalhe_vars = ", ".join(resumo_verificadas)
             self.ultimo_percurso_8553 = percurso_8553
+            self.ultimos_passos = passos
             return (
                 proximo,
                 f"Regra 1.2.3 (Variações 8553 [{detalhe_vars}] fora das listas -> Fila 6 ADREC): {proximo}",
@@ -498,6 +518,7 @@ class DistribuidorAdvogados:
         passos["Fila dos 6 Advogados da ADREC?"] = "Sim"
         proximo = self.proximo_advogado()
         self.ultimo_percurso_8553 = percurso_8553
+        self.ultimos_passos = passos
         return (
             proximo,
             f"Regra 1.3 (Sem variação prévia da 8553 -> Fila 6 ADREC): {proximo}",
@@ -511,12 +532,13 @@ class DistribuidorAdvogados:
         advogados_compartilhados_principal: List[str],
         variacoes_8553: List[Dict[str, Any]],
         npj_principal: str = "",
-    ) -> Tuple[str, str, Dict[str, str]]:
+    ) -> Tuple[str, str]:
         """
         Aplica a árvore de decisão para DISTRIBUIÇÃO DE NOVAS VARIAÇÕES.
+        Atualiza `self.ultimos_passos` e `self.ultimo_percurso_8553` para os relatórios TXT e XLSX.
 
         Returns:
-            Tuple[str, str, Dict[str, str]]: `(advogado_escolhido, descricao_regra_aplicada, passos)`
+            Tuple[str, str]: `(advogado_escolhido, descricao_regra_aplicada)`
         """
         passos = criar_passos_vazios()
         passos["Variação Já Cadastrada e Ativa?"] = "Não"
@@ -528,7 +550,8 @@ class DistribuidorAdvogados:
             passos=passos,
             npj_principal=npj_principal,
         )
-        return advogado, motivo, passos
+        self.ultimos_passos = passos
+        return advogado, motivo
 
     def definir_advogado_reativacao(
         self,
@@ -537,22 +560,21 @@ class DistribuidorAdvogados:
         variacoes_8553: Optional[List[Dict[str, Any]]] = None,
         npj_principal: str = "",
         variacao_reativada: str = "",
-    ) -> Tuple[str, bool, str, Dict[str, str]]:
+    ) -> Tuple[str, bool, str]:
         """
         Aplica a regra de redistribuição de VARIAÇÕES REATIVADAS:
         1. Verifica se o advogado da variação reativada está na lista da ADEST ou
            em TODOS os advogados da ADREC:
            - Se SIM: mantém o advogado atual (`manteve_advogado = True`).
            - Se NÃO: aplica a árvore (Condução Compartilhada no NPJ 000 -> Variações da 8553
-             única / maior número -> Fila dos 6 advogados da ADREC).
+             única / da maior para a menor -> Fila dos 6 advogados da ADREC).
         2. Regra anti-"duas vezes seguidas":
            - Se a publicação reativada foi distribuída para um advogado específico dos
              6 da ADREC E o próximo da lista (`self.advogados[self.indice_atual]`) é ele,
              pula para o próximo nome da fila.
 
         Returns:
-            Tuple[str, bool, str, Dict[str, str]]:
-                `(advogado_escolhido, manteve_advogado_original, descricao_regra, passos)`
+            Tuple[str, bool, str]: `(advogado_escolhido, manteve_advogado_original, descricao_regra)`
         """
         advogados_compartilhados_principal = advogados_compartilhados_principal or []
         variacoes_8553 = variacoes_8553 or []
@@ -607,7 +629,8 @@ class DistribuidorAdvogados:
             else:
                 passos["Reativação: Pulou Próximo da Fila 6 ADREC (Evitar 2x Seguidas)?"] = "Não"
 
-        return advogado_escolhido, manteve_advogado, motivo, passos
+        self.ultimos_passos = passos
+        return advogado_escolhido, manteve_advogado, motivo
 
     def proximo_da_fila(self) -> str:
         """Apenas consulta quem é o próximo advogado da fila dos 6 da ADREC sem avançar."""
@@ -628,8 +651,8 @@ class DistribuidorAdvogados:
     ) -> None:
         """
         Registra uma publicação atribuída a um advogado para os relatórios TXT e XLSX finais,
-        armazenando tanto o resultado da Nova Lógica (Shadow / Lista Aleatória) quanto o da
-        Lógica Antiga (Último Número Pequeno / Automação Real) e o percurso nas variações 8553.
+        armazenando tanto o resultado da Nova Lógica (Lista Aleatória) quanto o da
+        Lógica Antiga (Último Número Pequeno) e o percurso nas variações 8553.
         """
         nome_padronizado = self.padronizar_nome_advogado(advogado)
         nome_legado_padronizado = (
@@ -639,9 +662,14 @@ class DistribuidorAdvogados:
         )
 
         if passos is None:
-            passos = criar_passos_vazios()
             if tipo == "Já Cadastrada":
+                passos = criar_passos_vazios()
                 passos["Variação Já Cadastrada e Ativa?"] = "Sim"
+            elif any(self.ultimos_passos.values()):
+                passos = dict(self.ultimos_passos)
+            else:
+                passos = criar_passos_vazios()
+        self.ultimos_passos = criar_passos_vazios()
 
         percurso_final = (
             list(percurso_8553)
@@ -787,9 +815,10 @@ class DistribuidorAdvogados:
     def formatar_relatorio_txt(self) -> str:
         """
         Gera o conteúdo organizado em TXT contendo:
-            1) As duas tabelas de contagem (Nova Lógica - Lista Aleatória vs Lógica Antiga - Último Número Pequeno).
-            2) Detalhamento enxuto por publicação mostrando apenas o que o robô faria (versão shadow)
-               e, quando passou por mais de uma variação na 8553, quais NPJs verificou e por que não escolheu.
+            1) As tabelas de contagem da Nova Lógica (Lista Aleatória) e comparativo com a
+               Lógica Antiga (Último Número Pequeno).
+            2) Detalhamento por publicação mostrando o advogado distribuído, a regra aplicada e,
+               quando passou por mais de uma variação na 8553, quais NPJs verificou e por que não escolheu.
         """
         agora_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         total_geral = len(self.registros_distribuicao)
@@ -821,11 +850,11 @@ class DistribuidorAdvogados:
         linhas.append("")
 
         # ------------------------------------------------------------------
-        # 1. NOVA LÓGICA (LISTA ALEATÓRIA - SHADOW)
+        # 1. NOVA LÓGICA (LISTA ALEATÓRIA)
         # ------------------------------------------------------------------
         linhas.append("-" * 88)
         linhas.append(
-            "1. QUANTIDADE POR ADVOGADO — NOVA LÓGICA (LISTA ALEATÓRIA / SHADOW)"
+            "1. QUANTIDADE POR ADVOGADO — NOVA LÓGICA (LISTA ALEATÓRIA)"
         )
         linhas.append("-" * 88)
         linhas.extend(self._formatar_bloco_tabelas_contagem("advogado"))
@@ -843,10 +872,10 @@ class DistribuidorAdvogados:
         linhas.append("")
 
         # ------------------------------------------------------------------
-        # 3. DETALHAMENTO DAS PUBLICAÇÕES (SOMENTE O QUE O ROBÔ FARIA - SHADOW)
+        # 3. DETALHAMENTO DAS PUBLICAÇÕES DISTRIBUÍDAS
         # ------------------------------------------------------------------
         linhas.append("-" * 88)
-        linhas.append("3. DETALHAMENTO DAS PUBLICAÇÕES DISTRIBUÍDAS (NOVA LÓGICA - SHADOW)")
+        linhas.append("3. DETALHAMENTO DAS PUBLICAÇÕES DISTRIBUÍDAS (NOVA LÓGICA)")
         linhas.append("-" * 88)
         if not self.registros_distribuicao:
             linhas.append("Nenhuma publicação distribuída nesta execução.")
@@ -880,13 +909,11 @@ class DistribuidorAdvogados:
             - As últimas colunas trazem o nome de cada advogado (ADEST e ADREC) e o número
               de publicações atribuídas a eles das reativadas e das novas variações.
         """
-        # Lista consolidada de advogados (ADEST + TODOS ADREC, sem duplicatas)
         todos_advogados_listas: List[str] = []
         for adv in self.advogados_adest + self.advogados_adrec_todos:
             if not any(nomes_advogados_correspondem(adv, existente) for existente in todos_advogados_listas):
                 todos_advogados_listas.append(adv)
 
-        # Calcula contagens de Novas Variações e Reativadas por advogado
         resumo_contagem_adv: Dict[str, str] = {}
         for adv in todos_advogados_listas:
             novas, reativ, _, _ = self._contar_por_advogado(adv, "advogado")
@@ -924,8 +951,6 @@ class DistribuidorAdvogados:
 
                 linha["Para Qual Advogado Foi o Processo"] = reg.get("advogado", "")
 
-                # Nas últimas colunas: nome de cada advogado e o número de publicações
-                # atribuídas a eles das reativadas e das novas variações (exibido na 1ª linha)
                 for adv in todos_advogados_listas:
                     linha[adv] = resumo_contagem_adv[adv] if idx == 0 else ""
 
